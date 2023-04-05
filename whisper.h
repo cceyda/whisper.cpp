@@ -340,6 +340,7 @@ extern "C" {
         bool no_context;        // do not use past transcription (if any) as initial prompt for the decoder
         bool single_segment;    // force single segment output (useful for streaming)
         bool print_special;     // print special tokens (e.g. <SOT>, <EOT>, <BEG>, etc.)
+        bool print_colors;      // print colors
         bool print_progress;    // print progress information
         bool print_realtime;    // print results from within whisper.cpp (avoid it, use callback instead)
         bool print_timestamps;  // print timestamps for each text segment when printing realtime

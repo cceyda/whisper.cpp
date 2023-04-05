@@ -7,12 +7,20 @@
 #include "common-sdl.h"
 #include "whisper.h"
 
+#include <cmath>
 #include <cassert>
 #include <cstdio>
 #include <string>
 #include <thread>
 #include <vector>
 #include <fstream>
+
+// Terminal color map. 10 colors grouped in ranges [0.0, 0.1, ..., 0.9]
+// Lowest is red, middle is yellow, highest is green.
+const std::vector<std::string> k_colors = {
+    "\033[38;5;196m", "\033[38;5;202m", "\033[38;5;208m", "\033[38;5;214m", "\033[38;5;220m",
+    "\033[38;5;226m", "\033[38;5;190m", "\033[38;5;154m", "\033[38;5;118m", "\033[38;5;82m",
+};
 
 //  500 -> 00:05.000
 // 6000 -> 01:00.000
@@ -44,6 +52,7 @@ struct whisper_params {
     bool speed_up      = false;
     bool translate     = false;
     bool print_special = false;
+    bool print_colors = false;
     bool no_context    = true;
     bool no_timestamps = false;
 
@@ -74,6 +83,8 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-su"  || arg == "--speed-up")      { params.speed_up      = true; }
         else if (arg == "-tr"  || arg == "--translate")     { params.translate     = true; }
         else if (arg == "-ps"  || arg == "--print-special") { params.print_special = true; }
+        else if (arg == "-pc"  || arg == "--print-colors")  { params.print_colors  = true; }
+        else if (arg == "-nt"  || arg == "--no-timestamps") { params.no_timestamps  = true; }
         else if (arg == "-kc"  || arg == "--keep-context")  { params.no_context    = false; }
         else if (arg == "-l"   || arg == "--language")      { params.language      = argv[++i]; }
         else if (arg == "-m"   || arg == "--model")         { params.model         = argv[++i]; }
@@ -106,6 +117,8 @@ void whisper_print_usage(int /*argc*/, char ** argv, const whisper_params & para
     fprintf(stderr, "  -su,      --speed-up      [%-7s] speed up audio by x2 (reduced accuracy)\n",     params.speed_up ? "true" : "false");
     fprintf(stderr, "  -tr,      --translate     [%-7s] translate from source language to english\n",   params.translate ? "true" : "false");
     fprintf(stderr, "  -ps,      --print-special [%-7s] print special tokens\n",                        params.print_special ? "true" : "false");
+    fprintf(stderr, "  -ps,      --print-colors  [%-7s] print colors\n",                                params.print_colors ? "true" : "false");
+    fprintf(stderr, "  -nt,      --no-timestamps [%-7s] do not print timestamps\n",                     params.no_timestamps ? "false" : "true");
     fprintf(stderr, "  -kc,      --keep-context  [%-7s] keep context between audio chunks\n",           params.no_context ? "false" : "true");
     fprintf(stderr, "  -l LANG,  --language LANG [%-7s] spoken language\n",                             params.language.c_str());
     fprintf(stderr, "  -m FNAME, --model FNAME   [%-7s] model path\n",                                  params.model.c_str());
@@ -132,7 +145,7 @@ int main(int argc, char ** argv) {
 
     const int n_new_line = !use_vad ? std::max(1, params.length_ms / params.step_ms - 1) : 1; // number of steps to print new line
 
-    params.no_timestamps  = !use_vad;
+    // params.no_timestamps  = !use_vad;
     params.no_context    |= use_vad;
     params.max_tokens     = 0;
 
@@ -285,6 +298,7 @@ int main(int argc, char ** argv) {
 
             wparams.print_progress   = false;
             wparams.print_special    = params.print_special;
+            wparams.print_colors    = params.print_colors;
             wparams.print_realtime   = false;
             wparams.print_timestamps = !params.no_timestamps;
             wparams.translate        = params.translate;
@@ -316,7 +330,7 @@ int main(int argc, char ** argv) {
                     printf("%s", std::string(100, ' ').c_str());
 
                     printf("\33[2K\r");
-                } else {
+                } else if (params.print_special){
                     const int64_t t1 = (t_last - t_start).count()/1000000;
                     const int64_t t0 = std::max(0.0, t1 - pcmf32.size()*1000.0/WHISPER_SAMPLE_RATE);
 
@@ -327,32 +341,50 @@ int main(int argc, char ** argv) {
 
                 const int n_segments = whisper_full_n_segments(ctx);
                 for (int i = 0; i < n_segments; ++i) {
-                    const char * text = whisper_full_get_segment_text(ctx, i);
+                    if (params.print_colors) {
+                        for (int j = 0; j < whisper_full_n_tokens(ctx, i); ++j) {
+                            if (params.print_special == false) {
+                                const whisper_token id = whisper_full_get_token_id(ctx, i, j);
+                                if (id >= whisper_token_eot(ctx)) {
+                                    continue;
+                                }
+                            }
 
-                    if (params.no_timestamps) {
+                            const char * text = whisper_full_get_token_text(ctx, i, j);
+                            const float  p    = whisper_full_get_token_p   (ctx, i, j);
+
+                            const int col = std::max(0, std::min((int) k_colors.size() - 1, (int) (std::pow(p, 3)*float(k_colors.size()))));
+
+                            printf("%s%s%s", k_colors[col].c_str(),text, "\033[0m");
+                        }
+                    }else {
+                        const char * text = whisper_full_get_segment_text(ctx, i);
+                        if (params.no_timestamps) {
                         printf("%s", text);
                         fflush(stdout);
 
                         if (params.fname_out.length() > 0) {
                             fout << text;
                         }
-                    } else {
-                        const int64_t t0 = whisper_full_get_segment_t0(ctx, i);
-                        const int64_t t1 = whisper_full_get_segment_t1(ctx, i);
+                        } else {
+                            const int64_t t0 = whisper_full_get_segment_t0(ctx, i);
+                            const int64_t t1 = whisper_full_get_segment_t1(ctx, i);
 
-                        printf ("[%s --> %s]  %s\n", to_timestamp(t0).c_str(), to_timestamp(t1).c_str(), text);
+                            printf ("[%s --> %s]  %s\n", to_timestamp(t0).c_str(), to_timestamp(t1).c_str(), text);
 
-                        if (params.fname_out.length() > 0) {
-                            fout << "[" << to_timestamp(t0) << " --> " << to_timestamp(t1) << "]  " << text << std::endl;
+                            if (params.fname_out.length() > 0) {
+                                fout << "[" << to_timestamp(t0) << " --> " << to_timestamp(t1) << "]  " << text << std::endl;
+                            }
                         }
                     }
+                    
                 }
 
                 if (params.fname_out.length() > 0) {
                     fout << std::endl;
                 }
 
-                if (use_vad){
+                if (use_vad & params.print_special){
                     printf("\n");
                     printf("### Transcription %d END\n", n_iter);
                 }
